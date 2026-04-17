@@ -1,18 +1,31 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import {
   createDynamicWorkflowEntrypoint,
-  type DispatcherMetadata,
   dispatchWorkflow,
   type LoadWorkflowRunner,
   MissingDispatcherMetadataError,
-  type WorkflowEventLike,
   type WorkflowRunner,
-  type WorkflowStepLike,
-  wrapParams,
 } from 'dynamic-workflows';
 import { describe, expect, it, vi } from 'vitest';
 
-function makeEvent<T>(payload: T): WorkflowEventLike<T> {
+/**
+ * Build a fake `WorkflowEvent` wrapping `params` in the dispatcher envelope.
+ * The envelope shape (`__dispatcherMetadata` + `params`) is duplicated here
+ * rather than imported — `wrapParams` is intentionally not part of the public
+ * API. If the envelope shape ever changes the tests should change too.
+ */
+function envelopedEvent<T>(params: T, metadata: Record<string, unknown>): WorkflowEvent<unknown> {
+  return {
+    payload: {
+      __dispatcherMetadata: metadata,
+      params,
+    },
+    timestamp: new Date(0),
+    instanceId: 'instance-1',
+  };
+}
+
+function bareEvent(payload: unknown): WorkflowEvent<unknown> {
   return {
     payload,
     timestamp: new Date(0),
@@ -21,10 +34,11 @@ function makeEvent<T>(payload: T): WorkflowEventLike<T> {
 }
 
 const DUMMY_CTX = {} as ExecutionContext;
+const DUMMY_STEP = {} as WorkflowStep;
 
 describe('dispatchWorkflow', () => {
   it('unwraps metadata from the event and passes it to the loader', async () => {
-    const capturedMetadata: DispatcherMetadata[] = [];
+    const capturedMetadata: Record<string, unknown>[] = [];
     const loader: LoadWorkflowRunner<unknown, unknown, string> = async ({ metadata }) => {
       capturedMetadata.push(metadata);
       return { run: async () => 'ok' };
@@ -32,8 +46,8 @@ describe('dispatchWorkflow', () => {
 
     const result = await dispatchWorkflow(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams({ hello: 'world' }, { tenantId: 'tenant-a' })),
-      {} as WorkflowStepLike,
+      envelopedEvent({ hello: 'world' }, { tenantId: 'tenant-a' }),
+      DUMMY_STEP,
       loader
     );
 
@@ -53,8 +67,8 @@ describe('dispatchWorkflow', () => {
     const env: MyEnv = { greeting: 'hi' };
     await dispatchWorkflow(
       { env, ctx: DUMMY_CTX },
-      makeEvent(wrapParams({}, { tenantId: 't1' })),
-      {} as WorkflowStepLike,
+      envelopedEvent({}, { tenantId: 't1' }),
+      DUMMY_STEP,
       loader
     );
 
@@ -70,8 +84,8 @@ describe('dispatchWorkflow', () => {
 
     const result = await dispatchWorkflow<unknown, { hello: string }, string>(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams({ hello: 'world' }, { tenantId: 't1' })),
-      {} as WorkflowStepLike,
+      envelopedEvent({ hello: 'world' }, { tenantId: 't1' }),
+      DUMMY_STEP,
       async () => runner
     );
 
@@ -79,19 +93,22 @@ describe('dispatchWorkflow', () => {
 
     const runMock = runner.run as ReturnType<typeof vi.fn>;
     expect(runMock).toHaveBeenCalledTimes(1);
-    const innerEvent = runMock.mock.calls[0]?.[0] as WorkflowEventLike<{ hello: string }>;
+    const innerEvent = runMock.mock.calls[0]?.[0] as WorkflowEvent<{ hello: string }>;
     expect(innerEvent.payload).toEqual({ hello: 'world' });
     expect(innerEvent.instanceId).toBe('instance-1');
     expect(innerEvent.timestamp).toEqual(new Date(0));
   });
 
   it('forwards the WorkflowStep object untouched', async () => {
-    const step = { do: async () => undefined, sleep: async () => undefined };
+    const step = {
+      do: async () => undefined,
+      sleep: async () => undefined,
+    } as unknown as WorkflowStep;
     let receivedStep: unknown = null;
 
     await dispatchWorkflow(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams(null, { tenantId: 't1' })),
+      envelopedEvent(null, { tenantId: 't1' }),
       step,
       async () => ({
         run: async (_event, s) => {
@@ -108,8 +125,8 @@ describe('dispatchWorkflow', () => {
     await expect(
       dispatchWorkflow(
         { env: {}, ctx: DUMMY_CTX },
-        makeEvent({ not: 'an envelope' }),
-        {} as WorkflowStepLike,
+        bareEvent({ not: 'an envelope' }),
+        DUMMY_STEP,
         async () => ({ run: async () => undefined })
       )
     ).rejects.toBeInstanceOf(MissingDispatcherMetadataError);
@@ -117,12 +134,9 @@ describe('dispatchWorkflow', () => {
 
   it('throws MissingDispatcherMetadataError on null payload', async () => {
     await expect(
-      dispatchWorkflow(
-        { env: {}, ctx: DUMMY_CTX },
-        makeEvent(null),
-        {} as WorkflowStepLike,
-        async () => ({ run: async () => undefined })
-      )
+      dispatchWorkflow({ env: {}, ctx: DUMMY_CTX }, bareEvent(null), DUMMY_STEP, async () => ({
+        run: async () => undefined,
+      }))
     ).rejects.toBeInstanceOf(MissingDispatcherMetadataError);
   });
 
@@ -133,8 +147,8 @@ describe('dispatchWorkflow', () => {
 
     const result = await dispatchWorkflow<unknown, unknown, number>(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams('hello', { tenantId: 't1' })),
-      {} as WorkflowStepLike,
+      envelopedEvent('hello', { tenantId: 't1' }),
+      DUMMY_STEP,
       () => runner
     );
 
@@ -145,8 +159,8 @@ describe('dispatchWorkflow', () => {
     await expect(
       dispatchWorkflow(
         { env: {}, ctx: DUMMY_CTX },
-        makeEvent(wrapParams({}, { tenantId: 't1' })),
-        {} as WorkflowStepLike,
+        envelopedEvent({}, { tenantId: 't1' }),
+        DUMMY_STEP,
         async () => {
           throw new Error('loader failed');
         }
@@ -158,8 +172,8 @@ describe('dispatchWorkflow', () => {
     await expect(
       dispatchWorkflow(
         { env: {}, ctx: DUMMY_CTX },
-        makeEvent(wrapParams({}, { tenantId: 't1' })),
-        {} as WorkflowStepLike,
+        envelopedEvent({}, { tenantId: 't1' }),
+        DUMMY_STEP,
         async () => ({
           run: async () => {
             throw new Error('worker run failed');
@@ -176,14 +190,14 @@ describe('dispatchWorkflow', () => {
 
     const a = await dispatchWorkflow<unknown, unknown, string>(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams({}, { tenantId: 'tenant-a' })),
-      {} as WorkflowStepLike,
+      envelopedEvent({}, { tenantId: 'tenant-a' }),
+      DUMMY_STEP,
       loader
     );
     const b = await dispatchWorkflow<unknown, unknown, string>(
       { env: {}, ctx: DUMMY_CTX },
-      makeEvent(wrapParams({}, { tenantId: 'tenant-b' })),
-      {} as WorkflowStepLike,
+      envelopedEvent({}, { tenantId: 'tenant-b' }),
+      DUMMY_STEP,
       loader
     );
 
@@ -210,7 +224,6 @@ describe('createDynamicWorkflowEntrypoint', () => {
       run: async () => undefined,
     }));
     expect(typeof Klass.prototype.run).toBe('function');
-    // The override must not be the base-class no-op; sanity-check by name.
     expect(Klass.prototype.run).not.toBe(WorkflowEntrypoint.prototype.run);
   });
 });

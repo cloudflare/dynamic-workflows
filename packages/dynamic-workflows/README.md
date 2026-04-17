@@ -201,15 +201,11 @@ export class MyDynamicWorkflow extends WorkflowEntrypoint<Env> {
 
 Thrown from `run()` if the `WorkflowEvent` payload is not a dispatcher envelope. This indicates the workflow was created against the raw binding instead of one wrapped with `wrapWorkflowBinding`.
 
-### `wrapParams(params, metadata)` / `unwrapParams(payload)`
-
-Low-level helpers that build/unpack the envelope. Most consumers will never need these — they're exposed for advanced scenarios (e.g. injecting metadata through paths the library doesn't know about, or inspecting a stored workflow payload).
-
 ## Caveats
 
 - **Persisted payloads contain metadata**. Workflows persists `event.payload` so it can replay steps. The envelope — including your dispatcher metadata — is part of that persisted payload. Don't put secrets in metadata.
-- **Metadata is user-visible**. The wrapped dynamic worker can read `event.payload` directly (before it goes through `unwrapParams`), so metadata is visible to tenant code. Treat it as untrusted routing information, not authorization.
-- **The envelope shape is stable**. `DispatcherEnvelope` is part of the public API — if you store workflow payloads externally, the `{ __dispatcherMetadata, params }` structure is safe to rely on.
+- **Metadata is user-visible to tenant code**. A workflow created through the wrapped binding has access to the envelope via `await instance.status()` (and similar) before the library ever sees it. Treat metadata as untrusted routing information, not authorization.
+- **The envelope shape is an implementation detail**. The library only promises that `wrapWorkflowBinding` and `createDynamicWorkflowEntrypoint` are compatible with each other — don't parse the persisted payload by hand.
 
 ## License
 

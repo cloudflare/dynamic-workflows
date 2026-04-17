@@ -1,9 +1,15 @@
 /**
- * Public types for dynamic-workflows.
+ * Public and internal types for dynamic-workflows.
  *
- * Because these types must remain compatible with Cloudflare's Workflows API
- * regardless of which `@cloudflare/workers-types` version the consumer has
- * installed, they are deliberately kept minimal and structural.
+ * A handful of types in this file (`DispatcherEnvelope`, `WorkflowEventLike`,
+ * `WorkflowStepLike`) are *not* re-exported from `index.ts` — they exist
+ * purely so the library's own function signatures can reference the shape
+ * of Workflows' `WorkflowEvent` / `WorkflowStep` without depending on a
+ * specific version of `@cloudflare/workers-types` or `cloudflare:workers`.
+ *
+ * Consumers should use the real `WorkflowEvent` / `WorkflowStep` types from
+ * `cloudflare:workers` in their own code — these structural types are
+ * compatible with them by design.
  */
 
 /**
@@ -20,48 +26,8 @@
 export type DispatcherMetadata = Record<string, unknown>;
 
 /**
- * A workflow instance as returned by `Workflow.create` / `Workflow.get`.
- * Kept as a structural type so we don't depend on a specific version of
- * `@cloudflare/workers-types`.
- */
-export interface WorkflowInstanceLike {
-  id: string;
-  status(): Promise<unknown>;
-  pause(): Promise<void>;
-  resume(): Promise<void>;
-  terminate(): Promise<void>;
-  restart(): Promise<void>;
-  sendEvent?(options: { type: string; payload: unknown }): Promise<void>;
-}
-
-/**
- * Options accepted by `Workflow.create` / `Workflow.createBatch`.
- */
-export interface WorkflowInstanceCreateOptionsLike {
-  id?: string;
-  params?: unknown;
-}
-
-/**
- * Minimal shape of a Cloudflare `Workflow` binding.
- *
- * See https://developers.cloudflare.com/workflows/build/workers-api/#workflow
- */
-export interface WorkflowBindingLike {
-  create(options?: WorkflowInstanceCreateOptionsLike): Promise<WorkflowInstanceLike>;
-  createBatch(batch: WorkflowInstanceCreateOptionsLike[]): Promise<WorkflowInstanceLike[]>;
-  get(id: string): Promise<WorkflowInstanceLike>;
-}
-
-/**
  * Envelope used to smuggle dispatcher metadata alongside the user's params.
- *
- * The wrapped binding wraps the user's `params` in this envelope before
- * calling the real binding, and the wrapped `WorkflowEntrypoint` unwraps it
- * before handing the event to the dynamic worker.
- *
- * The leading `__` and the specific key names are an implementation detail;
- * consumers should never need to construct or read this envelope directly.
+ * Internal — not re-exported from the public API.
  */
 export interface DispatcherEnvelope<T = unknown> {
   __dispatcherMetadata: DispatcherMetadata;
@@ -69,7 +35,8 @@ export interface DispatcherEnvelope<T = unknown> {
 }
 
 /**
- * A `WorkflowEvent` as delivered to a workflow's `run` method.
+ * Structural shape of a `WorkflowEvent`. Compatible with Cloudflare's real
+ * `WorkflowEvent<T>`; internal only.
  */
 export interface WorkflowEventLike<T = unknown> {
   payload: T;
@@ -78,21 +45,19 @@ export interface WorkflowEventLike<T = unknown> {
 }
 
 /**
- * A `WorkflowStep` as delivered to a workflow's `run` method.
- *
- * Structural only — the library forwards this object straight through to the
- * dynamic worker without inspecting it.
+ * Structural placeholder for `WorkflowStep`. The library never inspects the
+ * step handle — it just forwards it through to the dynamic worker — so any
+ * object will do. Internal only.
  */
 export type WorkflowStepLike = object;
 
 /**
- * A loader that returns the dynamic worker entrypoint responsible for
- * executing a workflow on behalf of a given tenant / metadata bucket.
+ * A dynamic workflow runner — something with a `run(event, step)` method that
+ * the wrapped `WorkflowEntrypoint` can delegate to.
  *
- * The returned object must expose a `run(event, step)` method with the same
- * shape as a regular `WorkflowEntrypoint`. The easiest way to satisfy this is
- * to return `worker.getEntrypoint()` from a Worker Loader binding and point
- * the dynamic worker at a class that `extends WorkflowEntrypoint`.
+ * The easiest way to satisfy this is to return `stub.getEntrypoint('X')` from
+ * a Worker Loader, pointing at a class in the dynamic worker that
+ * `extends WorkflowEntrypoint`.
  */
 export type WorkflowRunner<T = unknown, R = unknown> = {
   run(event: WorkflowEventLike<T>, step: WorkflowStepLike): Promise<R>;
@@ -100,8 +65,6 @@ export type WorkflowRunner<T = unknown, R = unknown> = {
 
 /**
  * Context passed to a {@link LoadWorkflowRunner}.
- *
- * This is what the wrapped `WorkflowEntrypoint` has access to at runtime:
  *
  * - `metadata` was attached by {@link wrapWorkflowBinding} at create-time.
  * - `env` is the dispatcher's own `env` (whatever bindings its wrangler

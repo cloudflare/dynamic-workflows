@@ -13,12 +13,7 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { unwrapParams } from './binding.js';
-import type {
-  LoadWorkflowRunner,
-  LoadWorkflowRunnerContext,
-  WorkflowEventLike,
-  WorkflowStepLike,
-} from './types.js';
+import type { LoadWorkflowRunner, WorkflowEventLike, WorkflowStepLike } from './types.js';
 
 /**
  * Error thrown when the `WorkflowEvent` does not contain a dispatcher
@@ -36,12 +31,26 @@ export class MissingDispatcherMetadataError extends Error {
 }
 
 /**
- * Shared implementation of `run()` for both the generated `WorkflowEntrypoint`
- * subclass and any custom subclass built with {@link withDynamicRun}.
+ * Shared implementation of `run()` — exported so consumers who want to write
+ * their own `WorkflowEntrypoint` subclass (e.g. to add logging around run)
+ * can reuse the core unwrap-and-delegate logic.
  *
- * Exported so that consumers who need a bit more control (e.g. to wire up
- * their own logging or to compose with other mixins) can reuse the core
- * unwrap-and-delegate logic.
+ * ```ts
+ * export class MyDynamicWorkflow extends WorkflowEntrypoint<Env> {
+ *   async run(event, step) {
+ *     return dispatchWorkflow(
+ *       { env: this.env, ctx: this.ctx },
+ *       event,
+ *       step,
+ *       async ({ metadata, env }) => loadRunnerForTenant(env, metadata)
+ *     );
+ *   }
+ * }
+ * ```
+ *
+ * The `event` / `step` parameters are typed structurally (matching
+ * Cloudflare's `WorkflowEvent` / `WorkflowStep`) so this function can be used
+ * regardless of which `@cloudflare/workers-types` version is installed.
  */
 export async function dispatchWorkflow<Env, Params, Result>(
   context: { env: Env; ctx: ExecutionContext },
@@ -62,13 +71,11 @@ export async function dispatchWorkflow<Env, Params, Result>(
     instanceId: event.instanceId,
   };
 
-  const runnerCtx: LoadWorkflowRunnerContext<Env> = {
+  const runner = await loadRunner({
     metadata,
     env: context.env,
     ctx: context.ctx,
-  };
-
-  const runner = await loadRunner(runnerCtx);
+  });
   return runner.run(innerEvent, step);
 }
 

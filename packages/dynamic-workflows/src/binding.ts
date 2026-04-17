@@ -8,22 +8,14 @@
  * `params` so the dispatcher can route the workflow back to the correct
  * dynamic worker when it later runs.
  *
- * Calls that don't create a new workflow (`get`, `status`, `pause`, etc.) are
- * forwarded unchanged.
+ * Calls that don't create a new workflow (`get`) are forwarded unchanged.
  */
 
-import type {
-  DispatcherEnvelope,
-  DispatcherMetadata,
-  WorkflowBindingLike,
-  WorkflowInstanceCreateOptionsLike,
-  WorkflowInstanceLike,
-} from './types.js';
+import type { DispatcherEnvelope, DispatcherMetadata } from './types.js';
 
 /**
  * Wrap a user's `params` payload in a dispatcher envelope.
- *
- * Exported for use by the wrapped `WorkflowEntrypoint`.
+ * Internal — callers go through {@link wrapWorkflowBinding}.
  */
 export function wrapParams<T>(params: T, metadata: DispatcherMetadata): DispatcherEnvelope<T> {
   return {
@@ -38,6 +30,8 @@ export function wrapParams<T>(params: T, metadata: DispatcherMetadata): Dispatch
  * Returns `null` if the payload is not an envelope (e.g. the workflow was
  * created directly against the real binding without going through a wrapped
  * binding). Callers should treat that as a misconfiguration.
+ *
+ * Internal — callers go through the wrapped `WorkflowEntrypoint`.
  */
 export function unwrapParams<T>(
   payload: unknown
@@ -66,32 +60,34 @@ export function unwrapParams<T>(
  * // Pass `wrapped` to the dynamic worker's env in place of env.WORKFLOWS.
  * ```
  *
- * The returned object implements the same structural interface as the real
- * binding (`create`, `createBatch`, `get`), so the dynamic worker can use it
- * as a drop-in replacement.
+ * The returned object has the same shape as a `Workflow`, so the dynamic
+ * worker can use it as a drop-in replacement.
  */
-export function wrapWorkflowBinding(
-  binding: WorkflowBindingLike,
+export function wrapWorkflowBinding<T = unknown>(
+  binding: Workflow<T>,
   metadata: DispatcherMetadata
-): WorkflowBindingLike {
+): Workflow<T> {
   return {
-    async create(options?: WorkflowInstanceCreateOptionsLike): Promise<WorkflowInstanceLike> {
+    async create(options?: WorkflowInstanceCreateOptions<T>): Promise<WorkflowInstance> {
       return binding.create({
         ...(options ?? {}),
-        params: wrapParams(options?.params, metadata),
+        // `params` is typed as `T` on the real binding but the Workflows
+        // engine treats it as opaque JSON, so pushing an envelope through is
+        // safe at runtime even though we lie to TypeScript here.
+        params: wrapParams(options?.params, metadata) as unknown as T,
       });
     },
 
-    async createBatch(batch: WorkflowInstanceCreateOptionsLike[]): Promise<WorkflowInstanceLike[]> {
+    async createBatch(batch: WorkflowInstanceCreateOptions<T>[]): Promise<WorkflowInstance[]> {
       return binding.createBatch(
         batch.map((options) => ({
           ...options,
-          params: wrapParams(options.params, metadata),
+          params: wrapParams(options.params, metadata) as unknown as T,
         }))
       );
     },
 
-    async get(id: string): Promise<WorkflowInstanceLike> {
+    async get(id: string): Promise<WorkflowInstance> {
       return binding.get(id);
     },
   };

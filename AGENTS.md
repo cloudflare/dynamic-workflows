@@ -19,14 +19,23 @@ pnpm run check      # Lint/format check
 packages/
 ├── dynamic-workflows/        # Main library
 │   └── src/
-│       ├── index.ts          # Public entrypoint + re-exports
-│       ├── binding.ts        # wrapWorkflowBinding, wrapParams/unwrapParams
+│       ├── index.ts          # Public entrypoint — re-exports 4 functions/values + 4 types
+│       ├── binding.ts        # wrapWorkflowBinding (+ internal wrapParams/unwrapParams helpers)
 │       ├── entrypoint.ts     # createDynamicWorkflowEntrypoint, dispatchWorkflow
-│       └── types.ts          # Public TypeScript interfaces
+│       └── types.ts          # Public + internal TypeScript interfaces
 ├── tests/                    # Vitest + workerd tests
 examples/
 └── basic/                    # Minimal dispatcher demo with two hardcoded tenants
 ```
+
+## Public API surface
+
+Only these are re-exported from `index.ts`:
+
+- **Runtime:** `wrapWorkflowBinding`, `createDynamicWorkflowEntrypoint`, `dispatchWorkflow`, `MissingDispatcherMetadataError`
+- **Types:** `DispatcherMetadata`, `LoadWorkflowRunner`, `LoadWorkflowRunnerContext`, `WorkflowRunner`
+
+Everything else in `binding.ts` / `types.ts` (`wrapParams`, `unwrapParams`, `DispatcherEnvelope`, `WorkflowEventLike`, `WorkflowStepLike`) is internal — kept purely so the library can type its own signatures without depending on a specific `@cloudflare/workers-types` version.
 
 ## Architecture
 

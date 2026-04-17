@@ -1,79 +1,45 @@
-import {
-  type DispatcherEnvelope,
-  unwrapParams,
-  type WorkflowBindingLike,
-  type WorkflowInstanceCreateOptionsLike,
-  type WorkflowInstanceLike,
-  wrapParams,
-  wrapWorkflowBinding,
-} from 'dynamic-workflows';
+import { wrapWorkflowBinding } from 'dynamic-workflows';
 import { describe, expect, it, vi } from 'vitest';
 
-function makeFakeInstance(id: string): WorkflowInstanceLike {
+/**
+ * The dispatcher envelope shape is an internal detail of the library, but
+ * tests need to assert on it — otherwise we'd be testing end-to-end only.
+ * We duplicate the shape here as a test-local type.
+ */
+interface Envelope<T = unknown> {
+  __dispatcherMetadata: Record<string, unknown>;
+  params: T;
+}
+
+function makeFakeInstance(id: string): WorkflowInstance {
   return {
     id,
-    status: async () => ({ status: 'queued' }),
+    status: async () => ({ status: 'queued' }) as any,
     pause: async () => {},
     resume: async () => {},
     terminate: async () => {},
     restart: async () => {},
+    sendEvent: async () => {},
   };
 }
 
 function makeFakeBinding(): {
-  binding: WorkflowBindingLike;
+  binding: Workflow;
   create: ReturnType<typeof vi.fn>;
   createBatch: ReturnType<typeof vi.fn>;
   get: ReturnType<typeof vi.fn>;
 } {
-  const create = vi.fn(async (opts?: WorkflowInstanceCreateOptionsLike) =>
+  const create = vi.fn(async (opts?: WorkflowInstanceCreateOptions) =>
     makeFakeInstance(opts?.id ?? 'auto-id')
   );
-  const createBatch = vi.fn(async (batch: WorkflowInstanceCreateOptionsLike[]) =>
+  const createBatch = vi.fn(async (batch: WorkflowInstanceCreateOptions[]) =>
     batch.map((opts) => makeFakeInstance(opts.id ?? 'auto-id'))
   );
   const get = vi.fn(async (id: string) => makeFakeInstance(id));
 
-  const binding: WorkflowBindingLike = { create, createBatch, get };
+  const binding: Workflow = { create, createBatch, get } as Workflow;
   return { binding, create, createBatch, get };
 }
-
-describe('wrapParams / unwrapParams', () => {
-  it('wraps params in a dispatcher envelope', () => {
-    const envelope = wrapParams({ foo: 'bar' }, { tenantId: 't1' });
-    expect(envelope).toEqual({
-      __dispatcherMetadata: { tenantId: 't1' },
-      params: { foo: 'bar' },
-    });
-  });
-
-  it('round-trips through unwrapParams', () => {
-    const envelope = wrapParams({ hello: 'world' }, { tenantId: 'acme' });
-    const unwrapped = unwrapParams<{ hello: string }>(envelope);
-    expect(unwrapped).toEqual({
-      metadata: { tenantId: 'acme' },
-      params: { hello: 'world' },
-    });
-  });
-
-  it('returns null when payload is not an envelope', () => {
-    expect(unwrapParams(null)).toBeNull();
-    expect(unwrapParams(undefined)).toBeNull();
-    expect(unwrapParams({ hello: 'world' })).toBeNull();
-    expect(unwrapParams('some string')).toBeNull();
-    expect(unwrapParams(42)).toBeNull();
-  });
-
-  it('handles wrapping undefined params', () => {
-    const envelope = wrapParams(undefined, { tenantId: 't1' });
-    expect(envelope.params).toBeUndefined();
-    expect(envelope.__dispatcherMetadata).toEqual({ tenantId: 't1' });
-
-    const unwrapped = unwrapParams(envelope);
-    expect(unwrapped?.params).toBeUndefined();
-    expect(unwrapped?.metadata).toEqual({ tenantId: 't1' });
-  });
-});
 
 describe('wrapWorkflowBinding', () => {
   it('injects metadata into create() params', async () => {
@@ -83,9 +49,9 @@ describe('wrapWorkflowBinding', () => {
     await wrapped.create({ id: 'wf-1', params: { input: 'hello' } });
 
     expect(create).toHaveBeenCalledTimes(1);
-    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptionsLike;
+    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptions;
     expect(calledWith.id).toBe('wf-1');
-    const envelope = calledWith.params as DispatcherEnvelope;
+    const envelope = calledWith.params as Envelope;
     expect(envelope.__dispatcherMetadata).toEqual({ tenantId: 'tenant-42' });
     expect(envelope.params).toEqual({ input: 'hello' });
   });
@@ -96,8 +62,8 @@ describe('wrapWorkflowBinding', () => {
 
     await wrapped.create();
 
-    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptionsLike;
-    const envelope = calledWith.params as DispatcherEnvelope;
+    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptions;
+    const envelope = calledWith.params as Envelope;
     expect(envelope.__dispatcherMetadata).toEqual({ tenantId: 't1' });
     expect(envelope.params).toBeUndefined();
   });
@@ -108,9 +74,9 @@ describe('wrapWorkflowBinding', () => {
 
     await wrapped.create({ id: 'wf-no-params' });
 
-    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptionsLike;
+    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptions;
     expect(calledWith.id).toBe('wf-no-params');
-    const envelope = calledWith.params as DispatcherEnvelope;
+    const envelope = calledWith.params as Envelope;
     expect(envelope.__dispatcherMetadata).toEqual({ tenantId: 't1' });
     expect(envelope.params).toBeUndefined();
   });
@@ -126,8 +92,8 @@ describe('wrapWorkflowBinding', () => {
 
     await wrapped.create({ params: { job: 'x' } });
 
-    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptionsLike;
-    const envelope = calledWith.params as DispatcherEnvelope;
+    const calledWith = create.mock.calls[0]?.[0] as WorkflowInstanceCreateOptions;
+    const envelope = calledWith.params as Envelope;
     expect(envelope.__dispatcherMetadata).toEqual({
       tenantId: 'acme',
       region: 'us-east',
@@ -148,15 +114,15 @@ describe('wrapWorkflowBinding', () => {
 
     expect(instances.map((i) => i.id)).toEqual(['a', 'b', 'c']);
 
-    const calledWith = createBatch.mock.calls[0]?.[0] as WorkflowInstanceCreateOptionsLike[];
+    const calledWith = createBatch.mock.calls[0]?.[0] as WorkflowInstanceCreateOptions[];
     expect(calledWith).toHaveLength(3);
     for (const opts of calledWith) {
-      const envelope = opts.params as DispatcherEnvelope;
+      const envelope = opts.params as Envelope;
       expect(envelope.__dispatcherMetadata).toEqual({ tenantId: 't1' });
     }
-    expect((calledWith[0]?.params as DispatcherEnvelope).params).toEqual({ n: 1 });
-    expect((calledWith[1]?.params as DispatcherEnvelope).params).toEqual({ n: 2 });
-    expect((calledWith[2]?.params as DispatcherEnvelope).params).toBeUndefined();
+    expect((calledWith[0]?.params as Envelope).params).toEqual({ n: 1 });
+    expect((calledWith[1]?.params as Envelope).params).toEqual({ n: 2 });
+    expect((calledWith[2]?.params as Envelope).params).toBeUndefined();
   });
 
   it('forwards get() unchanged', async () => {
@@ -194,8 +160,6 @@ describe('wrapWorkflowBinding', () => {
   });
 
   it('does not double-wrap if the same wrapped binding is used twice', async () => {
-    // Sanity-check: creating two workflows with the same wrapped binding
-    // should never produce nested envelopes.
     const { binding, create } = makeFakeBinding();
     const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
 
@@ -203,7 +167,7 @@ describe('wrapWorkflowBinding', () => {
     await wrapped.create({ params: { a: 2 } });
 
     for (const call of create.mock.calls) {
-      const envelope = (call[0] as WorkflowInstanceCreateOptionsLike).params as DispatcherEnvelope;
+      const envelope = (call[0] as WorkflowInstanceCreateOptions).params as Envelope;
       expect('__dispatcherMetadata' in ((envelope.params as object) ?? {})).toBe(false);
     }
   });

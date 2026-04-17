@@ -19,21 +19,15 @@
  * See the package README for the full flow and a worked example.
  */
 
-export { unwrapParams, wrapParams, wrapWorkflowBinding } from './binding.js';
+export { wrapWorkflowBinding } from './binding.js';
 export {
   createDynamicWorkflowEntrypoint,
   dispatchWorkflow,
   MissingDispatcherMetadataError,
 } from './entrypoint.js';
 export type {
-  DispatcherEnvelope,
   DispatcherMetadata,
   LoadWorkflowRunner,
   LoadWorkflowRunnerContext,
-  WorkflowBindingLike,
-  WorkflowEventLike,
-  WorkflowInstanceCreateOptionsLike,
-  WorkflowInstanceLike,
   WorkflowRunner,
-  WorkflowStepLike,
 } from './types.js';
