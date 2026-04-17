@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["@cloudflare/vitest-pool-workers"]
+  },
+  "include": ["src", "worker-configuration.d.ts"]
+}

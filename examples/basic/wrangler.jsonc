@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "basic-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "dynamic-workflow",
+      "binding": "WORKFLOWS",
+      "class_name": "DynamicWorkflow"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

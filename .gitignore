@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+.claude/
+*.log
+.DS_Store
+worker-configuration.d.ts
+
+# Vite cache directories
+.vite-test-cache/

@@ -1,0 +1,20 @@
+{
+  "name": "dynamic-workflows-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "wrangler types",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate-types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "dependencies": {
+    "dynamic-workflows": "workspace:*"
+  }
+}
