@@ -151,7 +151,8 @@ export class LogSession extends DurableObject {
    * https://github.com/cloudflare/capnweb/#automatic-disposal
    */
   async subscribe(subscriber: LogSubscriber): Promise<void> {
-    const kept = (subscriber as LogSubscriber & { dup?: () => LogSubscriber }).dup?.() ?? subscriber;
+    const kept =
+      (subscriber as LogSubscriber & { dup?: () => LogSubscriber }).dup?.() ?? subscriber;
     if (this.buffer.length > 0) {
       try {
         await kept.push([...this.buffer]);

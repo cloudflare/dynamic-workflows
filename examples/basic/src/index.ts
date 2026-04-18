@@ -155,7 +155,10 @@ export default {
         );
         if (!res.ok) {
           const text = await res.text();
-          return json({ error: text || 'Tenant returned error', status: res.status }, { status: 500 });
+          return json(
+            { error: text || 'Tenant returned error', status: res.status },
+            { status: 500 }
+          );
         }
         const created = (await res.json()) as { id: string; status: unknown };
         return json({ runId, id: created.id, status: created.status });

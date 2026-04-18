@@ -19,11 +19,7 @@
  * calls back into the dispatcher, where the real `Workflow` binding lives.
  */
 
-import {
-  RpcTarget,
-  WorkerEntrypoint,
-  exports as workersExports,
-} from 'cloudflare:workers';
+import { RpcTarget, WorkerEntrypoint, exports as workersExports } from 'cloudflare:workers';
 import type { DispatcherEnvelope, DispatcherMetadata } from './types.js';
 
 /**
@@ -212,9 +208,7 @@ export class DynamicWorkflowBinding extends WorkerEntrypoint<
  * export by name — it must match exactly.
  */
 interface ExportsWithBinding {
-  DynamicWorkflowBinding: (init: {
-    props: DynamicWorkflowBindingProps;
-  }) => Workflow;
+  DynamicWorkflowBinding: (init: { props: DynamicWorkflowBindingProps }) => Workflow;
 }
 
 /**
