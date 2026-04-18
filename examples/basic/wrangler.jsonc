@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "basic-example",
+  "name": "dynamic-workflows",
   "main": "src/index.ts",
   "compatibility_date": "2026-01-28",
   "compatibility_flags": ["experimental"],
