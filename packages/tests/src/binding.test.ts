@@ -1,10 +1,13 @@
-import { wrapWorkflowBinding } from 'dynamic-workflows';
+import { _dispatcherBindingImpl as dispatcherBindingImpl } from 'dynamic-workflows';
 import { describe, expect, it, vi } from 'vitest';
 
 /**
- * The dispatcher envelope shape is an internal detail of the library, but
- * tests need to assert on it — otherwise we'd be testing end-to-end only.
- * We duplicate the shape here as a test-local type.
+ * These tests exercise the binding-wrap envelope logic in isolation via
+ * {@link dispatcherBindingImpl} (the plain-object implementation shared with
+ * `DynamicWorkflowBinding`). The `WorkerEntrypoint` subclass itself can't be
+ * instantiated outside of a real RPC call, and its `create`/`createBatch`/
+ * `get` methods are thin delegates to this impl, so this gives the same
+ * coverage without a workerd RPC harness.
  */
 interface Envelope<T = unknown> {
   __dispatcherMetadata: Record<string, unknown>;
@@ -41,10 +44,14 @@ function makeFakeBinding(): {
   return { binding, create, createBatch, get };
 }
 
-describe('wrapWorkflowBinding', () => {
+function wrap(binding: Workflow, metadata: Record<string, unknown>): Workflow {
+  return dispatcherBindingImpl(() => binding, metadata);
+}
+
+describe('dispatcherBindingImpl (wrapWorkflowBinding envelope logic)', () => {
   it('injects metadata into create() params', async () => {
     const { binding, create } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 'tenant-42' });
+    const wrapped = wrap(binding, { tenantId: 'tenant-42' });
 
     await wrapped.create({ id: 'wf-1', params: { input: 'hello' } });
 
@@ -58,7 +65,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('injects metadata when create() is called with no options', async () => {
     const { binding, create } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     await wrapped.create();
 
@@ -70,7 +77,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('injects metadata when create() has no params', async () => {
     const { binding, create } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     await wrapped.create({ id: 'wf-no-params' });
 
@@ -83,7 +90,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('passes arbitrary metadata shapes', async () => {
     const { binding, create } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, {
+    const wrapped = wrap(binding, {
       tenantId: 'acme',
       region: 'us-east',
       features: ['beta', 'pro'],
@@ -104,7 +111,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('injects metadata into every item of createBatch()', async () => {
     const { binding, createBatch } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     const instances = await wrapped.createBatch([
       { id: 'a', params: { n: 1 } },
@@ -127,7 +134,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('forwards get() unchanged', async () => {
     const { binding, get } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     const instance = await wrapped.get('some-id');
 
@@ -142,7 +149,7 @@ describe('wrapWorkflowBinding', () => {
       id: 'returned-id',
     }));
 
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
     const instance = await wrapped.create({ params: { a: 1 } });
 
     expect(instance.id).toBe('returned-id');
@@ -150,7 +157,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('does not mutate the caller-provided options', async () => {
     const { binding } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     const options = { id: 'wf-1', params: { value: 42 } };
     await wrapped.create(options);
@@ -161,7 +168,7 @@ describe('wrapWorkflowBinding', () => {
 
   it('does not double-wrap if the same wrapped binding is used twice', async () => {
     const { binding, create } = makeFakeBinding();
-    const wrapped = wrapWorkflowBinding(binding, { tenantId: 't1' });
+    const wrapped = wrap(binding, { tenantId: 't1' });
 
     await wrapped.create({ params: { a: 1 } });
     await wrapped.create({ params: { a: 2 } });
@@ -170,5 +177,23 @@ describe('wrapWorkflowBinding', () => {
       const envelope = (call[0] as WorkflowInstanceCreateOptions).params as Envelope;
       expect('__dispatcherMetadata' in ((envelope.params as object) ?? {})).toBe(false);
     }
+  });
+
+  it('resolves the underlying binding lazily on every call', async () => {
+    const { binding } = makeFakeBinding();
+    let lookups = 0;
+    const wrapped = dispatcherBindingImpl(
+      () => {
+        lookups++;
+        return binding;
+      },
+      { tenantId: 't1' }
+    );
+
+    await wrapped.create();
+    await wrapped.create();
+    await wrapped.get('id');
+
+    expect(lookups).toBe(3);
   });
 });

@@ -1,8 +1,14 @@
-# basic-example
+# basic-example — interactive playground
 
-A minimal dispatcher worker that shows `dynamic-workflows` in action.
+A browser playground for `dynamic-workflows`. Write a JavaScript worker that
+defines a `TenantWorkflow`, hit **Run**, and watch the workflow execute:
 
-Two hard-coded tenants (`acme` and `globex`) each have their own workflow implementation. The dispatcher itself knows nothing about workflow steps — it just loads a tenant's code via the Worker Loader binding and lets `dynamic-workflows` route the `run()` call back to the right tenant.
+- Pre-extracted step checklist (from `step.do(...)` / `step.sleep(...)` calls
+  in your code) that lights up as the workflow progresses.
+- Live `console.log` / exception stream over Server-Sent Events (via a
+  [streaming Tail Worker](https://developers.cloudflare.com/workers/observability/logs/tail-workers/)
+  + a `LogSession` Durable Object).
+- Live status and final return value.
 
 ## Run
 
@@ -12,28 +18,54 @@ pnpm run build            # builds the dynamic-workflows library
 pnpm --filter=basic-example run dev
 ```
 
-Then:
+Then open <http://localhost:8787/>.
 
-```bash
-# Start a workflow for tenant `acme`
-curl -X POST 'http://localhost:8787/start?tenant=acme' \
-  -H 'content-type: application/json' \
-  -d '{"name":"world"}'
-# → { "tenant": "acme", "id": "...", "status": { ... } }
+## Moving pieces
 
-# Start one for tenant `globex`
-curl -X POST 'http://localhost:8787/start?tenant=globex' \
-  -H 'content-type: application/json' \
-  -d '{"name":"hello"}'
+| File                       | Role                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [`src/index.ts`](./src/index.ts)         | Dispatcher. Hosts the JSON API (`/api/run`, `/api/status`, `/api/stream`) and registers `DynamicWorkflow`. |
+| [`src/logging.ts`](./src/logging.ts)     | `LogSession` Durable Object + `DynamicWorkerTail` Tail Worker + SSE response helper.                       |
+| [`src/dashboard.ts`](./src/dashboard.ts) | The static HTML/JS dashboard served at `GET /`.                                                            |
+| [`src/default-source.ts`](./src/default-source.ts) | Seed code shown in the editor on first load.                                                       |
+| [`wrangler.jsonc`](./wrangler.jsonc)     | Bindings: `WORKFLOWS`, `LOADER`, `LOG_SESSION` (DO).                                                       |
 
-# Check status
-curl 'http://localhost:8787/status/<instance-id>'
+## How a run flows
+
+```
+browser ─POST /api/run──▶ dispatcher
+                             │
+                             │ 1. Allocate runId (= workflow instance id
+                             │    = LogSession DO name).
+                             │ 2. Store source in LogSession DO.
+                             │ 3. env.LOADER.get(runId, load cb) — attach
+                             │    DynamicWorkerTail with props: { runId }.
+                             │ 4. Call tenant's default.fetch, which calls
+                             │    env.WORKFLOWS.create({ id: runId, params }).
+                             ▼
+                         Workflows engine ──▶ dispatcher.DynamicWorkflow.run()
+                                                │
+                                                │ loads the same tenant worker
+                                                │ (cached, or re-bundled from
+                                                │ the DO-stored source) and
+                                                │ delegates to TenantWorkflow.run.
+                                                ▼
+                                        tenant worker ── console.log() ──▶ Tail
+                                                                              │
+                                                                              ▼
+                                                                LogSession.push()
+                                                                              │
+                             ┌─ SSE stream ◀── subscriber.push() ─────────────┘
+ browser ◀──────────────────┘
 ```
 
-Both tenants' workflows are executed through the **same** `DynamicWorkflow` class registered with Cloudflare Workflows — but each actually runs inside its own tenant's dynamic worker.
+## Caveats
 
-## What to read
-
-- [`src/index.ts`](./src/index.ts) — the dispatcher, including the wiring of `wrapWorkflowBinding` and `createDynamicWorkflowEntrypoint`.
-- [`src/tenants.ts`](./src/tenants.ts) — the two demo tenant scripts.
-- [`wrangler.jsonc`](./wrangler.jsonc) — binding configuration.
+- **Experimental flag**: uses `streamingTails` on the Worker Loader, which
+  requires the `experimental` compatibility flag and `allowExperimental: true`
+  on the loader config.
+- **No bundling**: the editor only accepts plain JavaScript. No TypeScript,
+  no npm imports — the source is passed straight to Worker Loader.
+- **No auth**: this is a demo. Don't put it on the public internet without
+  putting something serious in front of it, because it will run any JS the
+  caller POSTs.

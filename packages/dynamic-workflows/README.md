@@ -36,11 +36,13 @@ This library is that glue.
                                                        └─────────────────────────────────┘
 ```
 
-1. The dispatcher gives each dynamic worker a **wrapped** `Workflow` binding via `wrapWorkflowBinding(env.WORKFLOWS, { tenantId })`. When the dynamic worker calls `env.WORKFLOWS.create({ params })`, the wrapper transparently replaces `params` with `{ __dispatcherMetadata: { tenantId }, params }` before calling the real binding.
+1. The dispatcher gives each dynamic worker a **wrapped** `Workflow` binding via `wrapWorkflowBinding({ tenantId })`. The wrapped binding is actually an RPC stub pointing at a `DynamicWorkflowBinding` `WorkerEntrypoint` re-exported from the dispatcher's main module. When the dynamic worker calls `env.WORKFLOWS.create({ params })`, the call round-trips back into the dispatcher, which injects `{ __dispatcherMetadata: { tenantId }, params }` into the call to the real Workflow binding.
 2. The dispatcher registers a single `WorkflowEntrypoint` class — built with `createDynamicWorkflowEntrypoint(loader)` — as the workflow's `class_name`.
 3. When Workflows later invokes the dispatcher, the wrapped entrypoint pulls `__dispatcherMetadata` back out of the event, calls the dispatcher's `loader({ metadata, env, ctx })`, and forwards `run(innerEvent, step)` to whatever dynamic worker that loader returned.
 
 The dispatcher is still in full control of how it loads tenant code (Worker Loader, service bindings, whatever) — this library just moves the tenant id between the two halves of the dance.
+
+> **Why is `DynamicWorkflowBinding` a `WorkerEntrypoint` and not a plain object?** Bindings passed to a Dynamic Worker cross an RPC boundary and must be either structured-clonable values or RPC stubs. A plain object with `async create/get` methods would fail structured-clone. Wrapping it in a `WorkerEntrypoint` makes it an RPC stub that the tenant can call transparently.
 
 ## Installation
 
@@ -54,9 +56,15 @@ npm install dynamic-workflows
 // dispatcher/src/index.ts
 import {
   createDynamicWorkflowEntrypoint,
+  DynamicWorkflowBinding,
   wrapWorkflowBinding,
   type WorkflowRunner,
 } from 'dynamic-workflows';
+
+// REQUIRED: re-export DynamicWorkflowBinding from your main module so that
+// wrapWorkflowBinding() can find it on `cloudflare:workers` `exports` and
+// create specialised RPC stubs for each tenant.
+export { DynamicWorkflowBinding };
 
 interface Env {
   WORKFLOWS: Workflow;
@@ -74,7 +82,7 @@ function loadTenantWorker(env: Env, tenantId: string) {
       env: {
         // The tenant will use this exactly like the real Workflow binding.
         // Every create() will be tagged with { tenantId } automatically.
-        WORKFLOWS: wrapWorkflowBinding(env.WORKFLOWS, { tenantId }),
+        WORKFLOWS: wrapWorkflowBinding({ tenantId }),
       },
       globalOutbound: null,
     };
@@ -139,24 +147,41 @@ export default {
     // tagged with the tenant id the dispatcher attached.
     const body = await request.json();
     const instance = await env.WORKFLOWS.create({ params: body });
-    return Response.json({ id: instance.id });
+    // The returned `instance` is a Cap'n Web RPC stub pointing back into the
+    // dispatcher, so property access yields an RpcPromise — `await instance.id`.
+    return Response.json({ id: await instance.id });
   },
 };
 ```
 
 ## API
 
-### `wrapWorkflowBinding(binding, metadata)`
+### `DynamicWorkflowBinding`
 
-Wrap a `Workflow` binding so that every `create` / `createBatch` call
-stashes `metadata` alongside the user's `params`.
+A `WorkerEntrypoint` class that implements the `Workflow` binding interface.
 
-| Argument   | Type                       | Description                                                                                              |
-| ---------- | -------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `binding`  | `Workflow` (or compatible) | The real Workflow binding from the dispatcher's `env`.                                                   |
-| `metadata` | `Record<string, unknown>`  | Any JSON-serializable object. Typically `{ tenantId }`, but feel free to put routing hints, region, etc. |
+**You MUST re-export it from your dispatcher's main module.** Cloudflare uses
+the top-level exports of your worker to populate `ctx.exports` /
+`cloudflare:workers` `exports`, which is how `wrapWorkflowBinding` finds the
+class to instantiate per-tenant stubs.
 
-Returns a binding with the same shape as the input (`create`, `createBatch`, `get`).
+```ts
+// dispatcher/src/index.ts
+export { DynamicWorkflowBinding } from 'dynamic-workflows';
+```
+
+### `wrapWorkflowBinding(metadata, options?)`
+
+Produce a `Workflow`-shaped RPC stub that, when `.create()` / `.createBatch()`
+is called on it, tags each new instance's params with `metadata`. The returned
+stub is serialisable and can be passed as a binding to a Dynamic Worker.
+
+| Argument              | Type                      | Description                                                                                              |
+| --------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `metadata`            | `Record<string, unknown>` | Any JSON-serializable object. Typically `{ tenantId }`, but feel free to put routing hints, region, etc. |
+| `options.bindingName` | `string` (optional)       | Name of the `Workflow` binding on the dispatcher's `env`. Defaults to `'WORKFLOWS'`.                     |
+
+Throws if you forgot to re-export `DynamicWorkflowBinding` from your main module.
 
 ### `createDynamicWorkflowEntrypoint<Env, Params, Result>(loadRunner)`
 
@@ -206,6 +231,7 @@ Thrown from `run()` if the `WorkflowEvent` payload is not a dispatcher envelope.
 - **Persisted payloads contain metadata**. Workflows persists `event.payload` so it can replay steps. The envelope — including your dispatcher metadata — is part of that persisted payload. Don't put secrets in metadata.
 - **Metadata is user-visible to tenant code**. A workflow created through the wrapped binding has access to the envelope via `await instance.status()` (and similar) before the library ever sees it. Treat metadata as untrusted routing information, not authorization.
 - **The envelope shape is an implementation detail**. The library only promises that `wrapWorkflowBinding` and `createDynamicWorkflowEntrypoint` are compatible with each other — don't parse the persisted payload by hand.
+- **`WorkflowInstance` returned from the wrapped binding is an RPC stub**. Property access on a Cap'n Web stub returns an `RpcPromise`, so `instance.id` must be `await`ed to get the plain string. Method calls (`instance.status()`, etc.) work as expected.
 
 ## License
 

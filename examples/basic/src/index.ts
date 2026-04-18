@@ -1,22 +1,40 @@
 /**
- * Example dispatcher worker.
+ * Interactive playground dispatcher.
  *
- * The dispatcher is the only worker registered with Cloudflare Workflows.
- * When a tenant's code wants to start a workflow, it calls the wrapped
- * binding we hand it — which tags the create() call with the tenant's id.
+ * The user writes a JavaScript Worker that defines a `TenantWorkflow` class.
+ * Hitting "Run" POSTs that code plus a JSON payload to `/api/run`. We:
  *
- * Later, when Workflows dispatches the run() call back to this dispatcher,
- * our `DynamicWorkflow` class reads the tenant id off the event, loads the
- * correct dynamic worker via the Worker Loader binding, and forwards
- * `run(event, step)` to that worker's `WorkflowEntrypoint` subclass.
+ *   1. Allocate a `runId` (also used as the Workflow instance id and the
+ *      LogSession DO key).
+ *   2. Load the user's code as a dynamic worker, attaching a Tail Worker
+ *      that forwards every `console.log()` / exception into the matching
+ *      `LogSession` DO.
+ *   3. Forward an HTTP request to the tenant's `default.fetch`, which calls
+ *      the wrapped `env.WORKFLOWS.create({ id: runId, params })`.
+ *   4. The browser subscribes to `/api/stream/:runId` (Server-Sent Events)
+ *      to watch logs arrive in real time, and polls `/api/status/:runId`
+ *      to drive the step timeline.
+ *
+ * One `DynamicWorkflow` class is still registered with Cloudflare Workflows.
+ * `dynamic-workflows` handles the routing back to whichever tenant worker
+ * the dispatcher last loaded for that runId.
  */
 
+import { exports as workersExports } from 'cloudflare:workers';
 import {
   createDynamicWorkflowEntrypoint,
+  DynamicWorkflowBinding,
   type WorkflowRunner,
   wrapWorkflowBinding,
 } from 'dynamic-workflows';
-import { getTenantScript } from './tenants.js';
+import { DASHBOARD_HTML } from './dashboard.js';
+import { DEFAULT_SOURCE } from './default-source.js';
+import { DynamicWorkerTail, getLogSession, LogSession, streamLogsResponse } from './logging.js';
+
+// `wrapWorkflowBinding()` looks these up on `cloudflare:workers` `exports`.
+// The Tail Worker and Durable Object are discovered by the runtime the same
+// way — all three MUST be top-level named exports.
+export { DynamicWorkerTail, DynamicWorkflowBinding, LogSession };
 
 interface Env {
   WORKFLOWS: Workflow;
@@ -24,97 +42,146 @@ interface Env {
 }
 
 /**
- * Load a tenant's dynamic worker. This is the one piece of glue that only the
- * dispatcher knows how to do — loading a tenant's code from wherever the
- * dispatcher keeps it and giving it a wrapped Workflow binding tagged with
- * that tenant's id.
+ * Load (or fetch the cached) tenant worker for a given run.
+ *
+ * The loader caches by id — the callback is only invoked on cache miss.
+ * On a cache miss we fetch the source from the per-run LogSession DO,
+ * so workflow runs that resume after an isolate recycle can still find
+ * their code.
  */
-function loadTenantWorker(env: Env, tenantId: string): WorkerStub {
-  return env.LOADER.get(`tenant-${tenantId}`, async () => {
-    const script = getTenantScript(tenantId);
+function loadTenantWorker(env: Env, runId: string): WorkerStub {
+  const exports = workersExports as unknown as {
+    DynamicWorkerTail: (init: { props: { runId: string } }) => Fetcher;
+  };
+
+  return env.LOADER.get(`run-${runId}`, async () => {
+    const session = getLogSession(runId);
+    const source = await session.getSource();
+    if (!source) {
+      throw new Error(`No source registered for run ${runId}`);
+    }
     return {
-      compatibilityDate: script.compatibilityDate,
-      mainModule: script.mainModule,
-      modules: script.modules,
+      compatibilityDate: '2026-01-28',
+      mainModule: 'index.js',
+      modules: { 'index.js': source },
       env: {
-        // Hand the tenant worker a wrapped binding. When their code calls
-        // `env.WORKFLOWS.create(...)` it will automatically be tagged with
-        // `{ tenantId }` so we can route the run back here.
-        WORKFLOWS: wrapWorkflowBinding(env.WORKFLOWS, { tenantId }),
+        // Tagged with runId so we can route workflow runs back to this worker.
+        WORKFLOWS: wrapWorkflowBinding({ runId }),
       },
       globalOutbound: null,
+      // Attach a *streaming* tail so every console.log() / exception is
+      // delivered in real time. The non-streaming `tails:` field only fires
+      // at the end of each invocation and doesn't capture logs emitted
+      // inside workflow `run()` calls during local dev. Streaming tails
+      // are experimental so we have to opt in explicitly.
+      allowExperimental: true,
+      streamingTails: [exports.DynamicWorkerTail({ props: { runId } })],
     };
   });
 }
 
 /**
- * Workflow class registered in wrangler.jsonc as `class_name: "DynamicWorkflow"`.
+ * Registered as `class_name: "DynamicWorkflow"` in wrangler.jsonc.
  *
- * When Workflows dispatches a run back to us, the wrapped entrypoint reads
- * the tenant id off the metadata we stashed at create-time, loads the
- * matching dynamic worker, and forwards `run(event, step)` to its
- * `TenantWorkflow` class.
+ * `dynamic-workflows` has already unwrapped the envelope and handed us the
+ * `runId` by the time `loadRunner` is called. We re-load the same dynamic
+ * worker (the loader caches it by id), get a reference to the tenant's
+ * `TenantWorkflow` class, and delegate `run(event, step)` to it.
  */
 export const DynamicWorkflow = createDynamicWorkflowEntrypoint<Env>(({ env, metadata }) => {
-  const tenantId = metadata['tenantId'];
-  if (typeof tenantId !== 'string') {
-    throw new Error('Missing tenantId in dispatcher metadata');
+  const runId = metadata['runId'];
+  if (typeof runId !== 'string') {
+    throw new Error('Missing runId in dispatcher metadata');
   }
-  const stub = loadTenantWorker(env, tenantId);
+  const stub = loadTenantWorker(env, runId);
   return stub.getEntrypoint('TenantWorkflow') as unknown as WorkflowRunner;
 });
 
+function json(data: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+  });
+}
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // POST /start?tenant=<id>  body=<json payload> — start a workflow for a tenant
-    if (url.pathname === '/start' && request.method === 'POST') {
-      const tenantId = url.searchParams.get('tenant');
-      if (!tenantId) {
-        return new Response('Missing ?tenant=<id>', { status: 400 });
-      }
+    // --- Dashboard ---------------------------------------------------
+    if (url.pathname === '/' && request.method === 'GET') {
+      return new Response(DASHBOARD_HTML, {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    }
 
-      let payload: unknown = {};
+    // GET /api/source — default seed code for first page load.
+    if (url.pathname === '/api/source' && request.method === 'GET') {
+      return new Response(DEFAULT_SOURCE, {
+        headers: { 'content-type': 'text/javascript; charset=utf-8' },
+      });
+    }
+
+    // POST /api/run — body: { source: string, payload?: unknown }
+    if (url.pathname === '/api/run' && request.method === 'POST') {
+      let body: { source?: string; payload?: unknown };
       try {
-        const text = await request.text();
-        if (text) payload = JSON.parse(text);
+        body = (await request.json()) as typeof body;
       } catch {
-        return new Response('Invalid JSON body', { status: 400 });
+        return json({ error: 'Invalid JSON body' }, { status: 400 });
+      }
+      const source = body.source;
+      if (!source || typeof source !== 'string') {
+        return json({ error: 'Missing source code' }, { status: 400 });
       }
 
-      // Load the tenant's dynamic worker. Its entrypoint is a normal Worker
-      // (default export) — we let *it* call `env.WORKFLOWS.create()` so the
-      // tenant stays in control of ids and params.
-      const stub = loadTenantWorker(env, tenantId);
-      const entrypoint = stub.getEntrypoint() as Fetcher;
+      const runId = crypto.randomUUID();
+      // Stash the source in the per-run DO so the workflow run() can reload
+      // the same code later if the isolate recycles.
+      await getLogSession(runId).setSource(source);
 
-      // Forward the request to the tenant worker — it will create the
-      // workflow through the wrapped binding we gave it.
-      const startRequest = new Request('https://tenant.internal/start', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        headers: { 'content-type': 'application/json' },
-      });
-      return entrypoint.fetch(startRequest);
+      const stub = loadTenantWorker(env, runId);
+
+      try {
+        // Forward into the tenant worker so it calls env.WORKFLOWS.create()
+        // itself, via the wrapped binding. We pass the pre-allocated runId
+        // so the Workflow instance id matches our LogSession key.
+        const res = await (stub.getEntrypoint() as Fetcher).fetch(
+          new Request('https://tenant.internal/start', {
+            method: 'POST',
+            body: JSON.stringify({ id: runId, payload: body.payload ?? {} }),
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+        if (!res.ok) {
+          const text = await res.text();
+          return json({ error: text || 'Tenant returned error', status: res.status }, { status: 500 });
+        }
+        const created = (await res.json()) as { id: string; status: unknown };
+        return json({ runId, id: created.id, status: created.status });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: message }, { status: 500 });
+      }
     }
 
-    // GET /status/<id> — look up an instance
-    if (url.pathname.startsWith('/status/') && request.method === 'GET') {
-      const id = url.pathname.slice('/status/'.length);
-      const instance = await env.WORKFLOWS.get(id);
-      return Response.json({
-        id: instance.id,
-        status: await instance.status(),
-      });
+    // GET /api/status/:runId
+    if (url.pathname.startsWith('/api/status/') && request.method === 'GET') {
+      const runId = decodeURIComponent(url.pathname.slice('/api/status/'.length));
+      try {
+        const instance = await env.WORKFLOWS.get(runId);
+        return json({ id: instance.id, status: await instance.status() });
+      } catch (err) {
+        return json({ error: (err as Error).message }, { status: 404 });
+      }
     }
 
-    return new Response(
-      'dynamic-workflows basic example\n\n' +
-        'POST /start?tenant=acme   body: {"name":"world"}\n' +
-        'POST /start?tenant=globex body: {"name":"world"}\n' +
-        'GET  /status/<instance-id>\n',
-      { headers: { 'content-type': 'text/plain' } }
-    );
+    // GET /api/stream/:runId — Server-Sent Events stream of log entries.
+    if (url.pathname.startsWith('/api/stream/') && request.method === 'GET') {
+      const runId = decodeURIComponent(url.pathname.slice('/api/stream/'.length));
+      return streamLogsResponse(runId, ctx);
+    }
+
+    return new Response('Not Found', { status: 404 });
   },
 };

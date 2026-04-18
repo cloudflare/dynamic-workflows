@@ -19,7 +19,11 @@
  * See the package README for the full flow and a worked example.
  */
 
-export { wrapWorkflowBinding } from './binding.js';
+export { DynamicWorkflowBinding, wrapWorkflowBinding } from './binding.js';
+// Advanced / internal. Exposed for consumers that want to build their own
+// `Workflow`-shaped object (e.g. for unit tests, or wrapping via a different
+// RPC mechanism). Not covered by semver guarantees.
+export { dispatcherBindingImpl as _dispatcherBindingImpl } from './binding.js';
 export {
   createDynamicWorkflowEntrypoint,
   dispatchWorkflow,
