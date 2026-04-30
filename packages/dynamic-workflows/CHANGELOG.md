@@ -1,5 +1,11 @@
 # dynamic-workflows
 
+## 0.1.1
+
+### Patch Changes
+
+- [#1](https://github.com/cloudflare/dynamic-workflows/pull/1) [`ca0f1e9`](https://github.com/cloudflare/dynamic-workflows/commit/ca0f1e9ea88218490f9e000ee43afe660f8434ae) Thanks [@mia303](https://github.com/mia303)! - Release to npm
+
 ## 0.1.0
 
 ### Minor Changes
