@@ -1,5 +1,5 @@
 {
-  "name": "dynamic-workflows",
+  "name": "@cloudflare/dynamic-workflows",
   "version": "0.1.0",
   "description": "Integrate Cloudflare Workflows with Dynamic Workers by routing workflow execution to tenant-specific dynamic workers",
   "repository": {
