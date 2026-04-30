@@ -39,7 +39,7 @@ You stay in charge of *how* tenant code is loaded — Worker Loader, service bin
 ## Install
 
 ```bash
-npm install dynamic-workflows
+npm install @cloudflare/dynamic-workflows
 ```
 
 ## Use it
