@@ -4,15 +4,15 @@
   "description": "Integrate Cloudflare Workflows with Dynamic Workers by routing workflow execution to tenant-specific dynamic workers",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danlapid/dynamic-workflows.git",
+    "url": "git+https://github.com/cloudflare/dynamic-workflows.git",
     "directory": "packages/dynamic-workflows"
   },
   "author": "danlapid",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/danlapid/dynamic-workflows/issues"
+    "url": "https://github.com/cloudflare/dynamic-workflows/issues"
   },
-  "homepage": "https://github.com/danlapid/dynamic-workflows/tree/main/packages/dynamic-workflows#readme",
+  "homepage": "https://github.com/cloudflare/dynamic-workflows/tree/main/packages/dynamic-workflows#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
